@@ -17,6 +17,7 @@ from .governing_equations_biot import (
     goveq_biot_mex_upptn,
     goveq_biot_nomex_uvp,
     goveq_biot_mex_uvpn,
+    goveq_biot_nomex_leastsquares,
 )
 from .governing_equations_lTPM import goveq_lTPM_nomex_up, goveq_lTPM_mex_upn
 from .governing_equations_TPM import (
@@ -42,6 +43,7 @@ def set_discretisation(
             primary_variables == PrimaryVariables.up
             or primary_variables == PrimaryVariables.uppt
             or primary_variables == PrimaryVariables.uvp
+            or primary_variables == PrimaryVariables.usigpv_ls1
         ):
             is_linear = True
         elif (
@@ -74,6 +76,10 @@ def set_discretisation(
         return set_discretisation_uvpn(
             domain_mesh, fe_spaces, element_order, is_linear, nhS_is_dg
         )
+    elif primary_variables == PrimaryVariables.usigpv_ls1:
+        return set_discretisation_usigpv(
+            domain_mesh, fe_spaces, element_order, is_linear
+        )
     else:
         raise ValueError("Unknown formulation type.")
 
@@ -94,6 +100,8 @@ def set_default_spaces(primary_variables: PrimaryVariables):
         or primary_variables == PrimaryVariables.uvpn
     ):
         return FeSpaces.uvp_RT
+    elif primary_variables == PrimaryVariables.usigpv_ls1:
+        return FeSpaces.ls_1_BDM
     else:
         raise ValueError("Unknown formulation type.")
 
@@ -111,7 +119,7 @@ def set_default_orders(primary_variables: PrimaryVariables, fe_spaces: FeSpaces)
             return [1, 1, 1]
         else:
             raise ValueError("Unknown fe-space")
-    if (primary_variables == PrimaryVariables.uppt) or (
+    elif (primary_variables == PrimaryVariables.uppt) or (
         primary_variables == PrimaryVariables.upptn
     ):
         if fe_spaces == FeSpaces.uppt_TH:
@@ -127,6 +135,9 @@ def set_default_orders(primary_variables: PrimaryVariables, fe_spaces: FeSpaces)
             return [2, 1, 0, 1]
         else:
             raise ValueError("Unknown fe-space")
+    elif primary_variables == PrimaryVariables.usigpv_ls1:
+        if fe_spaces.ls_1_RT or fe_spaces.ls_1_BDM:
+            return [1, 1, 1, 1]
 
 
 # --- Finite-element space for u-p(-n) formulation
@@ -296,6 +307,70 @@ def set_discretisation_uvpn(
     return SolutionSpace(V_mixed, ["u", "vD", "p", "nhS"], True, is_linear)
 
 
+# --- Finite-element space for u-sigma-p-v formulation
+def set_spaces_usigpv_base(
+    domain_mesh: dmesh.Mesh, fe_spaces: FeSpaces, element_order: typing.List[int]
+):
+    # Spatial dimension
+    gdim = domain_mesh.geometry.dim
+
+    # Set function spaces
+    if fe_spaces == FeSpaces.ls_1_RT:
+        Pu = basix.ufl.element(
+            "Lagrange", domain_mesh.basix_cell(), element_order[0], shape=(gdim,)
+        )
+        P_sig = basix.ufl.element("RT", domain_mesh.basix_cell(), element_order[1])
+        Pp = basix.ufl.element("Lagrange", domain_mesh.basix_cell(), element_order[2])
+        P_w = basix.ufl.element("RT", domain_mesh.basix_cell(), element_order[3])
+        P_l = basix.ufl.element("DG", domain_mesh.basix_cell(), 0, shape=(gdim,))
+    elif fe_spaces == FeSpaces.ls_1_BDM:
+        Pu = basix.ufl.element(
+            "Lagrange", domain_mesh.basix_cell(), element_order[0], shape=(gdim,)
+        )
+        P_sig = basix.ufl.element("BDM", domain_mesh.basix_cell(), element_order[1])
+        Pp = basix.ufl.element("Lagrange", domain_mesh.basix_cell(), element_order[2])
+        P_w = basix.ufl.element("BDM", domain_mesh.basix_cell(), element_order[3])
+        P_l = basix.ufl.element("DG", domain_mesh.basix_cell(), 0, shape=(gdim,))
+    else:
+        raise ValueError("Unknown element type.")
+
+    return Pu, P_sig, Pp, P_w, P_l
+
+
+def set_discretisation_usigpv(
+    domain_mesh: dmesh.Mesh,
+    fe_spaces: FeSpaces,
+    element_order: typing.List[int],
+    is_linear: bool,
+):
+    # Spatial dimension
+    gdim = domain_mesh.geometry.dim
+
+    # Set function spaces
+    Pu, Psig, Pp, Pw, Pl = set_spaces_usigpv_base(domain_mesh, fe_spaces, element_order)
+
+    if gdim == 2:
+        V_mixed = dfem.functionspace(
+            domain_mesh, basix.ufl.mixed_element([Pu, Psig, Psig, Pp, Pw, Pl])
+        )
+        field_names = ["u", "sigma_r1", "sigma_r2", "p", "nhFwtFS", "LagrMult"]
+    else:
+        V_mixed = dfem.functionspace(
+            domain_mesh, basix.ufl.mixed_element([Pu, Psig, Psig, Psig, Pp, Pw, Pl])
+        )
+        field_names = [
+            "u",
+            "sigma_r1",
+            "sigma_r2",
+            "sigma_r3",
+            "p",
+            "nhFwtFS",
+            "LagrMult",
+        ]
+
+    return SolutionSpace(V_mixed, field_names, True, is_linear)
+
+
 # --- Set weak forms ---
 def set_weakform(
     equation_type: EquationType,
@@ -315,6 +390,8 @@ def set_weakform(
             goveq_biot_nomex_uvp(problem)
         elif primary_variables == PrimaryVariables.uvpn:
             goveq_biot_mex_uvpn(problem)
+        elif primary_variables == PrimaryVariables.usigpv_ls1:
+            goveq_biot_nomex_leastsquares(problem)
         else:
             raise ValueError("Unknown formulation type.")
     elif equation_type == EquationType.lTPM or equation_type == EquationType.lTPM_Bluhm:

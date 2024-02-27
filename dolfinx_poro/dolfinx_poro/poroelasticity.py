@@ -18,6 +18,7 @@ class PrimaryVariables(Enum):
     upptn = 4
     uvp = 5
     uvpn = 6
+    usigpv_ls1 = 7
 
 
 class FeSpaces(Enum):
@@ -29,6 +30,8 @@ class FeSpaces(Enum):
     uppt_mini = 5
     uvp_RT = 6
     uvp_BDM = 7
+    ls_1_RT = 8
+    ls_1_BDM = 9
 
 
 class FieldVariables(Enum):

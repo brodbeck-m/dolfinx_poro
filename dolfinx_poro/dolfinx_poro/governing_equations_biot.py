@@ -285,6 +285,90 @@ def goveq_biot_nomex_uvp(problem: FemProblem):
     problem.weak_form += res_BLM + res_BMO + res_vD
 
 
+# --- Least squares FEM
+def goveq_biot_nomex_leastsquares(problem: FemProblem):
+    # --- Getters
+    # Spatial dimension
+    gdim = problem.domain.mesh.topology.dim
+
+    # Classes
+    solution_space = problem.solution_space
+    material = problem.material
+
+    # Material parameters
+    if not material.nondimensional_form:
+        raise ValueError("Non-dimensional material required!")
+
+    # Non-dimensional parameters
+    pi_1 = material.get_pi_ufl(NondimPar.pi_1)
+    pi_2 = material.get_pi_ufl(NondimPar.pi_2)
+    pi_3 = material.get_pi_ufl(NondimPar.pi_3)
+
+    # Volumetric terms
+    body_force = material.get_volumetric_term_ufl(VolumeTerms.body_force)
+
+    # --- Primal variables and test functions
+    if gdim == 2:
+        # Primal variables
+        u = solution_space.trial_fkt[0]
+        sig1 = solution_space.trial_fkt[1]
+        sig2 = solution_space.trial_fkt[2]
+        p = solution_space.trial_fkt[3]
+        nhFwtFS = solution_space.trial_fkt[4]
+        l = solution_space.trial_fkt[5]
+
+        # Test functions
+        v_u = solution_space.test_fkt[0]
+        v_sig1 = solution_space.test_fkt[1]
+        v_sig2 = solution_space.test_fkt[2]
+        v_p = solution_space.test_fkt[3]
+        v_w = solution_space.test_fkt[4]
+        v_l = solution_space.test_fkt[5]
+
+        sig = ufl.as_matrix([[sig1[0], sig1[1]], [sig2[0], sig2[1]]])
+        v_sig = ufl.as_matrix([[v_sig1[0], v_sig1[1]], [v_sig2[0], v_sig2[1]]])
+    else:
+        raise NotImplementedError("3D not implemented yet")
+
+    # --- History fields
+    u_n = solution_space.uh_n[0]
+
+    # --- Constitutive relations
+    def EtS_u(u):
+        return ufl.sym(ufl.grad(u))
+
+    def EtS_sig(sig, p, pi_1):
+        h_pi1 = 2 * (pi_1 + 1)
+
+        A_sig = 0.5 * (sig - (pi_1 / h_pi1) * ufl.tr(sig) * ufl.Identity(2))
+        corr_p = (1 / h_pi1) * p * ufl.Identity(2)
+
+        return A_sig + corr_p
+
+    # --- variation of least-squares functional
+    dv = problem.domain.dv
+    dt = problem.ufl_dt
+
+    # Flow problem
+    ls_bmo = ufl.inner(ufl.div(u - u_n) + ufl.div(nhFwtFS), ufl.div(v_u) + ufl.div(v_w))
+    ls_nhFwtFS = (1 / dt) * ufl.inner(
+        dt * ufl.grad(p) + nhFwtFS, dt * ufl.grad(v_p) + v_w
+    )
+
+    # Stress/strain relation
+    ls_strain = ufl.inner(
+        EtS_u(u) - EtS_sig(sig, p, pi_1), EtS_u(v_u) - EtS_sig(v_sig, v_p, pi_1)
+    )
+
+    if body_force is not None:
+        raise NotImplementedError("Currently no body-forces considered")
+    else:
+        ls_divconstr = ufl.inner(ufl.div(sig), v_l) + ufl.inner(l, ufl.div(v_sig))
+
+    # Add volumetric contributions of weak form
+    problem.weak_form += (ls_bmo + ls_nhFwtFS + ls_strain + ls_divconstr) * dv
+
+
 # --- Poroelasticity with mass exchange ---
 # --- u-p-n formulation
 def goveq_biot_mex_upn(problem: FemProblem):
