@@ -7,6 +7,7 @@ where a traction boundary is applied on the drained top boundary.
 """
 
 # --- Imports ---
+from enum import Enum
 import numpy as np
 import typing
 
@@ -294,3 +295,203 @@ class DirichletTerzaghiUSigPW(DirichletBC):
         facets = fct_fkts.indices[fct_fkts.values == 3]
         dofs = dfem.locate_dofs_topological((V.sub(4), V_sub[4]), 1, facets)
         self.list.append(dfem.dirichletbc(self.uD[4], dofs, V.sub(4)))
+
+
+# --- Analytic solution ---
+class AnalyticResults(Enum):
+    time = 0
+    u_max = 1
+    p_max = 2
+    mass_solid = 3
+    mass_total = 4
+    outflow = 5
+    error = 6
+
+
+class AnalyticFields(Enum):
+    displacement = 0
+    pressure = 1
+    volume_fraction = 2
+    seep_velocity = 3
+    stress = 4
+
+
+class AnalyticSolution:
+    def __init__(
+        self,
+        pi_1: float,
+        pi_2: float,
+        geom_L: float,
+        bc_qtop: float,
+        z: typing.Optional[np.ndarray] = None,
+        n_coeffs: typing.Optional[int] = 100,
+    ) -> None:
+        # Counters
+        self.n_points = z.shape[0]
+        self.n_coeffs = n_coeffs
+
+        # Points
+        self.position = z
+
+        # Source term BMS
+        self.pi_1 = pi_1
+        self.pi_2 = pi_2
+
+        # --- Coefficients
+        Lhm1 = 1 / geom_L
+        h1 = 1 / (2 + pi_1)
+        f0 = bc_qtop
+
+        # Initialise storage
+        self.Nn = (pi_1 + 2) * (
+            (0.5 * Lhm1 * np.pi * (1 + 2 * np.arange(n_coeffs))) ** 2
+        )
+
+        self.pn = np.zeros(n_coeffs)
+        self.pndt = np.zeros(n_coeffs)
+
+        self.p_z = np.zeros((self.n_points, n_coeffs))
+        self.u_z = np.zeros((self.n_points, n_coeffs))
+        self.uf_z = np.zeros(self.n_points)
+        self.dpdz_z = np.zeros((self.n_points, n_coeffs))
+        self.dudz_z = np.zeros((self.n_points, n_coeffs))
+
+        # Set (constant) values
+        # (Reverse z-axis to compare with dolfinx_poro)
+        fctrn = 0.5 * Lhm1 * np.pi * (1 + 2 * np.arange(n_coeffs))
+        mfctrn_pm1 = (2 * f0) / (fctrn * geom_L)
+        mfctrn_pm2 = (2 * f0 * Lhm1) / (fctrn**2)
+
+        for i in range(self.n_points):
+            z_i = -z[i] + geom_L
+
+            self.p_z[i, :] = np.multiply(mfctrn_pm1, np.sin(fctrn * z_i))
+            self.dpdz_z[i, :] = -2 * f0 * Lhm1 * np.cos(fctrn * z_i)
+
+            self.u_z[i, :] = -h1 * np.multiply(mfctrn_pm2, np.cos(fctrn * z_i))
+            self.dudz_z[i, :] = -h1 * np.multiply(mfctrn_pm1, np.sin(fctrn * z_i))
+
+        self.uf_z = -h1 * f0 * z[:]
+
+        # --- Results
+        # Field quantities
+        self.field_var = None
+        self.results_mass = None
+
+    # --- Fourier coefficients of the pressure field ---
+    def calculate_pn(self, time: float) -> None:
+        self.pn[:] = np.exp(-self.Nn * time)
+
+    # --- Outflow over top-surface ---
+    def calculate_outflux(self, time: float) -> float:
+        raise NotImplementedError
+
+    def calculate_outflow(self, time: float):
+        raise NotImplementedError
+
+    # --- Solutions ---
+    def evaluate_solution(
+        self,
+        nhSt0S: float,
+        times: typing.Union[typing.List, np.ndarray],
+        evaluate_mass_error: typing.Optional[float] = False,
+        out_name: typing.Optional[str] = None,
+        supress_output: typing.Optional[bool] = False,
+        map_seepage_velocity: typing.Optional[bool] = True,
+    ) -> None:
+        # Initialise storage
+        self.field_var = np.zeros((self.n_points, 1 + len(times), 5))
+
+        if evaluate_mass_error:
+            raise NotImplementedError
+
+        # Evaluate solution
+        header = "z"
+
+        for n, time in enumerate(times):
+            # Evaluate (time dependent) coefficients
+            self.calculate_pn(time)
+
+            # Evaluate displacement
+            self.field_var[:, n + 1, 0] = self.uf_z - np.dot(self.u_z, self.pn)
+
+            # Evaluate pressure
+            self.field_var[:, n + 1, 1] = np.dot(self.p_z, self.pn)
+
+            # Evaluate volume fraction
+            self.field_var[:, n + 1, 2] = nhSt0S / (1 + np.dot(self.dudz_z, self.pn))
+
+            # Evaluate total stress
+            # TODO - Add total stress
+
+            # Evaluate seepage velocity
+            if map_seepage_velocity:
+                self.field_var[:, n + 1, 3] = np.multiply(
+                    1 / (1 + np.dot(self.dudz_z, self.pn)),
+                    -np.dot(self.dpdz_z, self.pn),
+                )
+            else:
+                self.field_var[:, n + 1, 3] = -np.dot(self.dpdz_z, self.pn)
+
+            # Evaluate mass error
+            if evaluate_mass_error:
+                # Set time to output
+                self.results_mass[n + 1, AnalyticResults.time.value] = time
+
+                # Evaluate displacement at z=1
+                if np.isclose(self.position[-1], 1):
+                    self.results_mass[n + 1, AnalyticResults.u_max.value] = (
+                        self.field_var[-1, n + 1, AnalyticFields.displacement.value]
+                    )
+                else:
+                    raise ValueError("z=1 not in position array!")
+
+                # Evaluate pressure at z=0
+                if np.isclose(self.position[0], 0):
+                    self.results_mass[n + 1, AnalyticResults.p_max.value] = (
+                        self.field_var[0, n + 1, AnalyticFields.pressure.value]
+                    )
+                else:
+                    raise ValueError("z=1 not in position array!")
+
+                # Evaluate solid mass
+
+                # Evaluate total mass
+
+                # Evaluate outflow
+
+                # Evaluate mass error (internal + outflow is initial!)
+                # Outflow is positive when it leaves the domain!
+
+                raise NotImplementedError
+
+            # Update header
+            header += "," + str(time)
+
+        # Export to file
+        if not supress_output:
+            # Set default name for output
+            if out_name is None:
+                out_name = "growth_1d-analytic_solution"
+
+            # Export primal field variables
+            for i, pvar in enumerate(["u", "p", "nhS", "nhFwtFS"]):
+                # Store positions
+                self.field_var[:, 0, i] = self.position
+
+                # Export results
+                np.savetxt(
+                    out_name + "_pvar-" + pvar + ".csv",
+                    self.field_var[:, :, i],
+                    delimiter=",",
+                    header=header,
+                )
+
+            # Export mass error
+            if evaluate_mass_error:
+                np.savetxt(
+                    out_name + "_error-mass.csv",
+                    self.results_mass,
+                    delimiter=",",
+                    header="time, u_max, p_max, mass_solid, mass_total, outflux, error [%]",
+                )
