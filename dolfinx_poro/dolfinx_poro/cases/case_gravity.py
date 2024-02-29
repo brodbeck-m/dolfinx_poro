@@ -78,7 +78,11 @@ def setup_calculation(
         sdisc_nelmt = [36, 72]
 
     # Set volume fraction (if it is no field-quantity)
-    if primary_variables == PrimaryVariables.up:
+    if (
+        primary_variables == PrimaryVariables.up
+        or PrimaryVariables.uppt
+        or PrimaryVariables.uvp
+    ):
         material.set_volumetric_term(VolumeTerms.nhSt0S, initcond_nhSt0S)
 
     # Specify gravity
