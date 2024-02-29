@@ -54,7 +54,7 @@ def goveq_TPM_up_base(problem: FemProblem, nhStS0S: typing.Optional[typing.Any] 
 
     # Solid velocity
     vtS_t_dt = u - u_n
-    divxtS_t_dt = JtS * ufl.inner(inv_tFtS, ufl.grad(vtS_t_dt))
+    divxtS_t_dt = JtS * ufl.inner(ufl.grad(vtS_t_dt), inv_tFtS)
 
     # --- Constitutives
     # Stress
@@ -143,7 +143,7 @@ def goveq_TPM_upv_base(
 
     # Solid velocity
     vtS_t_dt = u - u_n
-    divxtS_t_dt = JtS * ufl.inner(inv_tFtS, ufl.grad(vtS_t_dt))
+    divxtS_t_dt = JtS * ufl.inner(ufl.grad(vtS_t_dt), inv_tFtS)
 
     # --- Constitutives
     # Stress
@@ -257,7 +257,7 @@ def goveq_TPM_mex_upn(problem: FemProblem):
 
     # Velocities
     vtS_t_dt = u - u_n
-    divxtS_t_dt = ufl.inner(ufl.inv(ufl.transpose(FtS)), ufl.grad(vtS_t_dt))
+    divxtS_t_dt = JtS * ufl.inner(ufl.grad(vtS_t_dt), ufl.inv(ufl.transpose(FtS)))
     DnhSDt_t_dt = nhS - nhS_n
 
     # --- Governing equations
@@ -318,7 +318,7 @@ def goveq_TPM_mex_uvpn(problem: FemProblem):
 
     # Velocities
     vtS_t_dt = u - u_n
-    divxtS_t_dt = ufl.inner(ufl.inv(ufl.transpose(FtS)), ufl.grad(vtS_t_dt))
+    divxtS_t_dt = ufl.inner(ufl.grad(vtS_t_dt), ufl.inv(ufl.transpose(FtS)))
 
     DnhSDt_t_dt = nhS - nhS_n
 
