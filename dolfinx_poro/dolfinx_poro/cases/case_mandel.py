@@ -52,7 +52,7 @@ from dolfinx_poro import (
     scale_primal_variables,
 )
 
-from dolfinx_poro.poroelasticity import NondimPar
+from dolfinx_poro.poroelasticity import NondimPar, VolumeTerms
 from dolfinx_poro.material import AbstractMaterialPoro
 from dolfinx_poro.fem import (
     Domain,
@@ -69,7 +69,9 @@ def setup_calculation(
     equation_type: EquationType,
     primary_variables: PrimaryVariables,
     material: typing.Type[AbstractMaterialPoro],
-    pif_top: float,
+    load_top: float,
+    constant_traction_bc: bool = False,
+    time_function_load: typing.Optional[typing.Callable] = None,
     domain_geometry: typing.Optional[typing.List[float]] = None,
     sdisc_fetype: typing.Optional[FeSpaces] = None,
     sdisc_discont_volfrac: typing.Optional[bool] = False,
@@ -80,7 +82,7 @@ def setup_calculation(
 ):
     # Check input
     if domain_geometry is None:
-        domain_geometry = [0.5, 0.5]
+        domain_geometry = [1.0, 0.5]
 
     if sdisc_fetype is None:
         sdisc_fetype = set_default_spaces(primary_variables)
@@ -89,10 +91,22 @@ def setup_calculation(
         sdisc_eorder = set_default_orders(primary_variables, sdisc_fetype)
 
     if sdisc_nelmt is None:
-        sdisc_nelmt = [8, 40]
+        sdisc_nelmt = [40, 20]
 
-    if not material.nondimensional_form:
-        raise ValueError("Mandel problem only in non-dimensional form supported")
+    if not constant_traction_bc:
+        if not material.nondimensional_form:
+            raise ValueError("Mandel problem only in non-dimensional form supported")
+
+        if time_function_load is not None:
+            raise ValueError("Analytic solution only for constant force possible")
+
+    # Set volume fraction (if it is no field-quantity)
+    if (
+        primary_variables == PrimaryVariables.up
+        or PrimaryVariables.uppt
+        or PrimaryVariables.uvp
+    ):
+        material.set_volumetric_term(VolumeTerms.nhSt0S, initcond_nhSt0S)
 
     # The mesh
     domain = create_geometry_rectangle(domain_geometry, sdisc_nelmt)
@@ -119,10 +133,17 @@ def setup_calculation(
         scale_primal_variables(primary_variables, fem_problem)
 
     # Set boundary conditions
-    dirichlet_function = TopDisplMandel(pif_top, material.get_pi(NondimPar.pi_1))
+    if not constant_traction_bc:
+        dirichlet_function = TopDisplMandel(load_top, material.get_pi(NondimPar.pi_1))
+    else:
+        dirichlet_function = None
 
-    if (primary_variables == PrimaryVariables.upn) or (
-        primary_variables == PrimaryVariables.upptn
+    if (
+        primary_variables == PrimaryVariables.up
+        or primary_variables == PrimaryVariables.upn
+    ) or (
+        primary_variables == PrimaryVariables.uppt
+        or primary_variables == PrimaryVariables.upptn
     ):
         # Initialise essential boundary conditions
         fem_problem.initialise_essential_bc(
@@ -130,17 +151,34 @@ def setup_calculation(
                 fem_problem.domain,
                 fem_problem.solution_space.function_space,
                 fem_problem.solution_space.sub_function_spaces,
-                dirichlet_function,
+                bfunc_utop=dirichlet_function,
             )
         )
+
+        # Traction boundary condition
+        if constant_traction_bc:
+            q_top = load_top / domain_geometry[0]
+
+            fem_problem.initialise_natural_bc(
+                -q_top * ufl.FacetNormal(fem_problem.domain.mesh),
+                4,
+                subspace=0,
+                time_function=time_function_load,
+            )
     else:
         raise ValueError("Unknown formulation type.")
 
     # Set initial conditions
-    if primary_variables == PrimaryVariables.upn:
+    if primary_variables == PrimaryVariables.up:
+        fem_problem.initialise_solution([0], [0])
+    elif primary_variables == PrimaryVariables.upn:
         fem_problem.initialise_solution([0, initcond_nhSt0S], [0, 2])
+    elif primary_variables == PrimaryVariables.uppt:
+        fem_problem.initialise_solution([0, 0], [1, 2])
     elif primary_variables == PrimaryVariables.upptn:
         fem_problem.initialise_solution([0, 0, initcond_nhSt0S], [1, 2, 3])
+    elif primary_variables == PrimaryVariables.uvp:
+        fem_problem.initialise_solution([0], [0])
     elif primary_variables == PrimaryVariables.uvpn:
         fem_problem.initialise_solution([0, initcond_nhSt0S], [0, 3])
     else:
@@ -156,15 +194,16 @@ class TopDisplMandel(DirichletFunction):
         pi_f: typing.Optional[float] = None,
         pi_1: typing.Optional[float] = None,
     ):
-        # Default constructor
-        super().__init__(0, True)
-
         # Initialise analytic solution
         self.analytic_solution = AnalyticSolution(pi_1, pi_f, n_coeffs=500)
 
+        # Default constructor
+        super().__init__(0, True)
+
     def __call__(self, x):
         # Evaluate top displacement
-        u_top = 0.01
+        u_top = 0.0
+        raise NotImplementedError
 
         # Return the external displacement
         uD = np.zeros((2, x.shape[1]), dtype=dolfinx.default_scalar_type)
@@ -180,13 +219,17 @@ class DirichletMandelUPN(DirichletBC):
         domain: Domain,
         V: dfem.FunctionSpace,
         V_sub: typing.List[dfem.FunctionSpace],
-        bfunc_utop: TopDisplMandel,
+        bfunc_utop: typing.Optional[TopDisplMandel] = None,
     ):
+        # Initialise analytic solution
+        self.dirichlet_at_top = False
+
+        if bfunc_utop is not None:
+            self.dirichlet_at_top = True
+            self.initialise_dirichlet_values(V_sub[0], dirichlet_function=bfunc_utop)
+
         # Default constructor
         super().__init__(domain, V, V_sub)
-
-        # Initialise analytic solution
-        self.initialise_dirichlet_values(V_sub[0], dirichlet_function=bfunc_utop)
 
     def set_dirichletbc(
         self,
@@ -201,31 +244,39 @@ class DirichletMandelUPN(DirichletBC):
         self.initialise_dirichlet_values(V_sub[0], const_value=0.0, id_subspace=0)
         self.initialise_dirichlet_values(V_sub[1], const_value=0.0, id_subspace=1)
 
+        if self.dirichlet_at_top:
+            id_u_zero = 1
+            id_p_zero = 2
+        else:
+            id_u_zero = 0
+            id_p_zero = 1
+
         # --- Displacement BCs
         # Boundary 1: No horizontal displacement
         facets = fct_fkts.indices[fct_fkts.values == 1]
         dofs = dfem.locate_dofs_topological(
             (V.sub(0).sub(0), V_sub[0].sub(0)), 1, facets
         )
-        self.list.append(dfem.dirichletbc(self.uD[1], dofs, V.sub(0)))
+        self.list.append(dfem.dirichletbc(self.uD[id_u_zero], dofs, V.sub(0)))
 
         # Boundary 2: No vertical displacement
         facets = fct_fkts.indices[fct_fkts.values == 2]
         dofs = dfem.locate_dofs_topological(
             (V.sub(0).sub(1), V_sub[0].sub(1)), 1, facets
         )
-        self.list.append(dfem.dirichletbc(self.uD[1], dofs, V.sub(0)))
+        self.list.append(dfem.dirichletbc(self.uD[id_u_zero], dofs, V.sub(0)))
 
         # Boundary 4: Prescribe analytic solution
-        facets = fct_fkts.indices[fct_fkts.values == 4]
-        dofs = dfem.locate_dofs_topological((V.sub(0), V_sub[0]), 1, facets)
-        self.list.append(dfem.dirichletbc(self.uD[0], dofs, V.sub(0)))
+        if self.dirichlet_at_top:
+            facets = fct_fkts.indices[fct_fkts.values == 4]
+            dofs = dfem.locate_dofs_topological((V.sub(0), V_sub[0]), 1, facets)
+            self.list.append(dfem.dirichletbc(self.uD[0], dofs, V.sub(0)))
 
         # --- Pressure BCs
         # Boundary 3: Outflow
         facets = fct_fkts.indices[fct_fkts.values == 3]
         dofs = dfem.locate_dofs_topological((V.sub(1), V_sub[1]), 1, facets)
-        self.list.append(dfem.dirichletbc(self.uD[2], dofs, V.sub(1)))
+        self.list.append(dfem.dirichletbc(self.uD[id_p_zero], dofs, V.sub(1)))
 
 
 # --- Analytic solution ---
@@ -275,6 +326,10 @@ class AnalyticSolution:
         # Field quantities
         self.field_var = None
         self.results_mass = None
+
+        raise NotImplementedError(
+            "Analytic solution for Mandel problem currently not implemented"
+        )
 
     # --- Time dependent part of the Fourier coefficients ---
     def calculate_timefactors(self, time: float) -> None:
