@@ -34,6 +34,7 @@ from mpi4py import MPI
 import numpy as np
 import typing
 
+import dolfinx
 import dolfinx.fem as dfem
 import dolfinx.mesh as dmesh
 import ufl
@@ -52,7 +53,12 @@ from dolfinx_poro import (
     scale_primal_variables,
 )
 from dolfinx_poro.material import AbstractMaterialPoro
-from dolfinx_poro.fem import Domain, DirichletBC, set_finite_element_problem
+from dolfinx_poro.fem import (
+    Domain,
+    DirichletBC,
+    DirichletFunction,
+    set_finite_element_problem,
+)
 
 
 # --- Mesh generation  ---
@@ -174,6 +180,16 @@ def setup_calculation(
         fem_problem.initialise_natural_bc(
             -q_top * ufl.FacetNormal(fem_problem.domain.mesh), 5, 0
         )
+    elif primary_variables == PrimaryVariables.usigpv_ls1:
+        # Initialise essential boundary conditions
+        fem_problem.initialise_essential_bc(
+            DirichletFootingUSigPW(
+                fem_problem.domain,
+                fem_problem.solution_space.function_space,
+                fem_problem.solution_space.sub_function_spaces,
+                -q_top,
+            )
+        )
     else:
         raise ValueError("Unknown formulation type.")
 
@@ -182,11 +198,14 @@ def setup_calculation(
         fem_problem.initialise_solution([0], [0])
     elif primary_variables == PrimaryVariables.upn:
         fem_problem.initialise_solution([0, initcond_nhSt0S], [0, 2])
+    elif primary_variables == PrimaryVariables.usigpv_ls1:
+        fem_problem.initialise_solution([0], [0])
 
     return fem_problem
 
 
 # --- The Dirichlet boundary conditions ---
+# --- u_p_n resp. u_p_pt_n formulation
 class DirichletFootingUPN(DirichletBC):
     def set_dirichletbc(
         self,
@@ -224,3 +243,128 @@ class DirichletFootingUPN(DirichletBC):
         facets = fct_fkts.indices[fct_fkts.values == 4]
         dofs = dfem.locate_dofs_topological((V.sub(1), V_sub[1]), 1, facets)
         self.list.append(dfem.dirichletbc(self.uD[1], dofs, V.sub(1)))
+
+
+# --- 4-field formulation based on u, sigma, p and nhFwtFS
+class TractionTop_Footing4Field(DirichletFunction):
+    def __init__(self, subspace: int, is_timedependent: bool, traction_top: float):
+        super().__init__(subspace, is_timedependent)
+
+        # The traction on the top boundary
+        self.traction_top = traction_top
+
+    def __call__(self, x):
+        traction = np.zeros((2, x.shape[1]), dtype=dolfinx.default_scalar_type)
+        traction[0] = 0
+        traction[1] = self.traction_top
+
+        return traction
+
+
+class DirichletFootingUSigPW(DirichletBC):
+    def __init__(
+        self,
+        domain: Domain,
+        V: dfem.FunctionSpace,
+        V_sub: typing.List[dfem.FunctionSpace],
+        traction_top: float,
+    ):
+        # The traction on the top boundary
+        self.traction_top = traction_top
+
+        # Constructor of base class
+        super().__init__(domain, V, V_sub)
+
+    def set_dirichletbc(
+        self,
+        domain: Domain,
+        V: dfem.FunctionSpace,
+        V_sub: typing.List[dfem.FunctionSpace],
+    ):
+        # Extract facet functions
+        fct_fkts = domain.facet_functions
+
+        # Initialise boundary values
+        self.initialise_dirichlet_values(V_sub[0], const_value=0.0, id_subspace=0)
+
+        self.initialise_dirichlet_values(V_sub[1], const_value=0.0, id_subspace=1)
+        self.initialise_dirichlet_values(
+            V_sub[1],
+            dirichlet_function=TractionTop_Footing4Field(1, False, self.traction_top),
+        )
+
+        self.initialise_dirichlet_values(V_sub[3], const_value=0.0, id_subspace=3)
+        self.initialise_dirichlet_values(V_sub[4], const_value=0.0, id_subspace=4)
+
+        # --- Displacement BCs
+        # Boundary 1: No horizontal displacement
+        facets = fct_fkts.indices[fct_fkts.values == 1]
+        dofs = dfem.locate_dofs_topological(
+            (V.sub(0).sub(0), V_sub[0].sub(0)), 1, facets
+        )
+        self.list.append(dfem.dirichletbc(self.uD[0], dofs, V.sub(0)))
+
+        # Boundary 2: No displacement
+        facets = fct_fkts.indices[fct_fkts.values == 2]
+        dofs = dfem.locate_dofs_topological((V.sub(0), V_sub[0]), 1, facets)
+        self.list.append(dfem.dirichletbc(self.uD[0], dofs, V.sub(0)))
+
+        # --- Traction BCs
+        # Boundary 1
+        facets = fct_fkts.indices[fct_fkts.values == 1]
+        dofs = dfem.locate_dofs_topological((V.sub(2), V_sub[2]), 1, facets)
+        self.list.append(dfem.dirichletbc(self.uD[1], dofs, V.sub(2)))
+
+        # Boundary 3
+        facets = fct_fkts.indices[fct_fkts.values == 3]
+
+        dofs = dfem.locate_dofs_topological((V.sub(1), V_sub[1]), 1, facets)
+        self.list.append(dfem.dirichletbc(self.uD[1], dofs, V.sub(1)))
+
+        dofs = dfem.locate_dofs_topological((V.sub(2), V_sub[2]), 1, facets)
+        self.list.append(dfem.dirichletbc(self.uD[1], dofs, V.sub(2)))
+
+        # Boundary 4
+        facets = fct_fkts.indices[fct_fkts.values == 4]
+
+        dofs = dfem.locate_dofs_topological((V.sub(1), V_sub[1]), 1, facets)
+        self.list.append(dfem.dirichletbc(self.uD[1], dofs, V.sub(1)))
+
+        dofs = dfem.locate_dofs_topological((V.sub(2), V_sub[2]), 1, facets)
+        self.list.append(dfem.dirichletbc(self.uD[1], dofs, V.sub(2)))
+
+        # Boundary 5: Traction bc
+        facets = fct_fkts.indices[fct_fkts.values == 5]
+
+        dofs = dfem.locate_dofs_topological((V.sub(1), V_sub[1]), 1, facets)
+        self.list.append(dfem.dirichletbc(self.uD[1], dofs, V.sub(1)))
+
+        dofs = dfem.locate_dofs_topological((V.sub(2), V_sub[2]), 1, facets)
+        self.list.append(dfem.dirichletbc(self.uD[2], dofs, V.sub(2)))
+
+        # --- Pressure BCs
+        # Boundary 3: Outflow
+        facets = fct_fkts.indices[fct_fkts.values == 3]
+        dofs = dfem.locate_dofs_topological((V.sub(3), V_sub[3]), 1, facets)
+        self.list.append(dfem.dirichletbc(self.uD[3], dofs, V.sub(3)))
+
+        # Boundary 4: Outflow
+        facets = fct_fkts.indices[fct_fkts.values == 4]
+        dofs = dfem.locate_dofs_topological((V.sub(3), V_sub[3]), 1, facets)
+        self.list.append(dfem.dirichletbc(self.uD[3], dofs, V.sub(3)))
+
+        # --- Flow BCs
+        # Boundary 1: No Outflow
+        facets = fct_fkts.indices[fct_fkts.values == 1]
+        dofs = dfem.locate_dofs_topological((V.sub(4), V_sub[4]), 1, facets)
+        self.list.append(dfem.dirichletbc(self.uD[4], dofs, V.sub(4)))
+
+        # Boundary 2: No Outflow
+        facets = fct_fkts.indices[fct_fkts.values == 2]
+        dofs = dfem.locate_dofs_topological((V.sub(4), V_sub[4]), 1, facets)
+        self.list.append(dfem.dirichletbc(self.uD[4], dofs, V.sub(4)))
+
+        # Boundary 5: No Outflow
+        facets = fct_fkts.indices[fct_fkts.values == 5]
+        dofs = dfem.locate_dofs_topological((V.sub(4), V_sub[4]), 1, facets)
+        self.list.append(dfem.dirichletbc(self.uD[4], dofs, V.sub(4)))
