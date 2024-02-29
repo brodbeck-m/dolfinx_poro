@@ -81,8 +81,14 @@ class FemProblem:
         # The (essential) boundary conditions
         self.dirichlet_bc = None
 
-        # The residual
+        # The natural boundary conditions
+        self.time_dependent_natural_bc = False
+
         self.prefactors_natural_bc = self.solution_space.num_subspaces * [1.0]
+        self.time_functions_natural_bc = []
+        self.time_functions_ufl_natural_bc = []
+
+        # The residual
         self.weak_form = 0
 
         # The solution time
@@ -114,10 +120,29 @@ class FemProblem:
         self.dirichlet_bc = dirichlet_bc
 
     def initialise_natural_bc(
-        self, value: typing.Any, boundary_id: int, subspace: typing.Optional[int] = 1
+        self,
+        value: typing.Any,
+        boundary_id: int,
+        subspace: typing.Optional[int] = 0,
+        time_function: typing.Optional[typing.Callable] = None,
     ):
+        # Initialise time function
+        if time_function is not None:
+            self.time_dependent_natural_bc = True
+
+            self.time_functions_natural_bc.append(time_function)
+            self.time_functions_ufl_natural_bc.append(
+                set_femconstant(self.domain.mesh, 1.0)
+            )
+
+            tval = self.time_functions_ufl_natural_bc[-1]
+        else:
+            tval = 1.0
+
+        # Set natural BC
         self.weak_form += (
             self.prefactors_natural_bc[subspace]
+            * tval
             * ufl.inner(value, self.solution_space.test_fkt[subspace])
             * self.domain.ds(boundary_id)
         )
@@ -356,6 +381,12 @@ class FemProblem:
         # Update boundary conditions
         if self.dirichlet_bc.is_timedependent:
             self.dirichlet_bc.update_time(self.time)
+
+        if self.time_dependent_natural_bc:
+            for fct, fct_ufl in zip(
+                self.time_functions_natural_bc, self.time_functions_ufl_natural_bc
+            ):
+                fct_ufl.value = fct(self.time)
 
 
 class FemProblemLinear(FemProblem):
