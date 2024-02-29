@@ -12,7 +12,13 @@ import ufl
 from .fem import Domain, SolutionSpace
 from .fem.abstract_material import AbstractMaterial
 from .fem.post_processor import PostProcessor
-from .poroelasticity import EquationType, PrimaryVariables, MatPar, NondimPar
+from .poroelasticity import (
+    EquationType,
+    PrimaryVariables,
+    MatPar,
+    NondimPar,
+    VolumeTerms,
+)
 
 
 # --- Mass evaluation for poro-elastic problem ---
@@ -40,6 +46,7 @@ class EvaluateMass(PostProcessor):
         equation_type: typing.Type[Enum],
         primary_variables: typing.Type[Enum],
         only_nth_step: typing.Optional[int] = 1,
+        output_results: typing.Optional[bool] = True,
         flux_surfaces: typing.Optional[typing.List[int]] = None,
     ):
         # --- Check input
@@ -52,7 +59,9 @@ class EvaluateMass(PostProcessor):
             raise ValueError("Post-processing of mass only on unscaled domains!")
 
         # Call basic constructor
-        super().__init__(domain, solution_space, material, only_nth_step)
+        super().__init__(
+            domain, solution_space, material, only_nth_step, output_results
+        )
 
         # --- Identifier
         self.mass_is_constant = False
@@ -91,22 +100,24 @@ class EvaluateMass(PostProcessor):
         # The primal variables
         if (
             primary_variables == PrimaryVariables.up
-            or primary_variables == PrimaryVariables.upn
+            or primary_variables == PrimaryVariables.uppt
         ):
+            u = self.solution_space.uh_n[0]
+            p = self.solution_space.uh_n[1]
+            nhS = self.material.get_volumetric_term_ufl(VolumeTerms.nhSt0S)
+        elif primary_variables == PrimaryVariables.upn:
             u = self.solution_space.uh_n[0]
             p = self.solution_space.uh_n[1]
             nhS = self.solution_space.uh_n[2]
-        elif (
-            primary_variables == PrimaryVariables.uppt
-            or primary_variables == PrimaryVariables.upptn
-        ):
+        elif primary_variables == PrimaryVariables.upptn:
             u = self.solution_space.uh_n[0]
             p = self.solution_space.uh_n[1]
             nhS = self.solution_space.uh_n[3]
-        elif (
-            primary_variables == PrimaryVariables.uvp
-            or primary_variables == PrimaryVariables.uvpn
-        ):
+        elif primary_variables == PrimaryVariables.uvp:
+            u = self.solution_space.uh_n[0]
+            p = self.solution_space.uh_n[2]
+            nhS = self.material.get_volumetric_term_ufl(VolumeTerms.nhSt0S)
+        elif primary_variables == PrimaryVariables.uvpn:
             u = self.solution_space.uh_n[0]
             p = self.solution_space.uh_n[2]
             nhS = self.solution_space.uh_n[3]
@@ -314,7 +325,7 @@ class EvaluateMass(PostProcessor):
 
     # --- Output ---
     def write_data(self, out_name: typing.Optional[str] = None):
-        if out_name is not None:
+        if (out_name is not None) and self.output_results:
             # Remove unused storage
             self.results = self.results[~np.all(self.results == 0, axis=1)]
 

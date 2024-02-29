@@ -19,6 +19,7 @@ class PostProcessor:
         solution_space: SolutionSpace,
         material: typing.Type[AbstractMaterial],
         only_nth_step: int,
+        output_results: bool,
     ):
         # The domain
         self.domain = domain
@@ -31,6 +32,7 @@ class PostProcessor:
 
         # Evaluate only after every n_th time step
         self.only_nth_step = only_nth_step
+        self.output_results = output_results
 
     def initialise_storage(self, time_end: float, dt: float):
         raise NotImplementedError
@@ -93,10 +95,13 @@ class PlotOverLine(PostProcessor):
         material: typing.Type[AbstractMaterial],
         line: Line,
         only_nth_step: typing.Optional[int] = 1,
+        output_results: typing.Optional[bool] = True,
         scaling_position: typing.Optional[float] = 1.0,
     ):
         # Call basic constructor
-        super().__init__(domain, solution_space, material, only_nth_step)
+        super().__init__(
+            domain, solution_space, material, only_nth_step, output_results
+        )
 
         # The Line over which the solution is evaluated
         self.line = line
@@ -111,7 +116,7 @@ class PlotOverLine(PostProcessor):
         # The header of the output files
         self.out_header = ["x", "y", "z"]
 
-        # The output fiels
+        # The output files
         self.out_files = []
         self.out_nfiles = 0
 
@@ -200,7 +205,7 @@ class PlotOverLine(PostProcessor):
                 h2 += bs
 
     def write_data(self, out_name: typing.Optional[str] = None):
-        if out_name is not None:
+        if (out_name is not None) and self.output_results:
             # Create header for output
             header = ",".join(self.out_header)
 

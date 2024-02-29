@@ -199,11 +199,11 @@ class FemProblem:
         self,
         dt: float,
         t_end: float,
-        output_paraview: bool = False,
-        output_name: str = None,
         post_processors: typing.Optional[
             typing.List[typing.Type[PostProcessor]]
         ] = None,
+        output_name: str = None,
+        output_paraview: bool = False,
         simulation_series: typing.Optional[typing.List[int]] = None,
     ):
         # Initialise time discretisation
