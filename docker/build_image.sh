@@ -4,8 +4,8 @@ CONTAINER_ENGINE="docker"
 
 if [ "$DPORO_HOME" = "" ];
 then
-    # Error if path to dolfinx_eqlb i not set
-    echo "Path to source folder not set! Use "export DPORO_HOME=/home/.../NondimPoroelasticity_with_Growth""
+    # Error if path to dolfinx_poro is not set
+    echo "Path to source folder not set! Use "export DPORO_HOME=/home/.../dolfinx_poro""
     exit 1
 else
     # Build docker image
