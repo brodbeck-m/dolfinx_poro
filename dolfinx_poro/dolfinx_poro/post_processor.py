@@ -98,13 +98,13 @@ class EvaluateMass(PostProcessor):
         flux_surfaces: typing.Optional[typing.List[int]] = None,
     ):
         # The primal variables
+        nhS = None
         if (
             primary_variables == PrimaryVariables.up
             or primary_variables == PrimaryVariables.uppt
         ):
             u = self.solution_space.uh_n[0]
             p = self.solution_space.uh_n[1]
-            nhS = self.material.get_volumetric_term_ufl(VolumeTerms.nhSt0S)
         elif primary_variables == PrimaryVariables.upn:
             u = self.solution_space.uh_n[0]
             p = self.solution_space.uh_n[1]
@@ -116,7 +116,6 @@ class EvaluateMass(PostProcessor):
         elif primary_variables == PrimaryVariables.uvp:
             u = self.solution_space.uh_n[0]
             p = self.solution_space.uh_n[2]
-            nhS = self.material.get_volumetric_term_ufl(VolumeTerms.nhSt0S)
         elif primary_variables == PrimaryVariables.uvpn:
             u = self.solution_space.uh_n[0]
             p = self.solution_space.uh_n[2]
@@ -132,6 +131,11 @@ class EvaluateMass(PostProcessor):
         # Required mappings
         FtS = ufl.Identity(len(u)) + ufl.grad(u)
         JtS = ufl.det(FtS)
+
+        # Set nhS if it is no primal variable
+        if nhS is None:
+            nhS0S = self.material.get_volumetric_term_ufl(VolumeTerms.nhSt0S)
+            nhS = nhS0S / JtS
 
         # The volume integrals
         self.integral_total_volume = dfem.form(JtS * ufl.dx)
